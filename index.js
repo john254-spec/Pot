@@ -325,9 +325,6 @@ async function startBot() {
         });
 
 
-    });
-
-
 
     // Detect deleted messages
 
