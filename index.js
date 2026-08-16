@@ -5,15 +5,17 @@ const path = require("path");
 const {
     default: makeWASocket,
     useMultiFileAuthState,
-    DisconnectReason
+    DisconnectReason,
+    Browsers,
+    fetchLatestBaileysVersion
 } = require("@whiskeysockets/baileys");
 
 const qrcode = require("qrcode-terminal");
 const P = require("pino");
 
-// =========================
+// ==========================================
 // EXPRESS SERVER
-// =========================
+// ==========================================
 
 const app = express();
 
@@ -27,15 +29,31 @@ app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
 });
 
-// =========================
-// PERSISTENT USER STORAGE
-// =========================
+// ==========================================
+// FILE PATHS
+// ==========================================
 
-const USERS_FILE = path.join(__dirname, "users.json");
+// Keep everything beside pt.js
+const AUTH_DIR = path.join(
+    __dirname,
+    "auth_info"
+);
+
+const USERS_FILE = path.join(
+    __dirname,
+    "users.json"
+);
+
+// ==========================================
+// PERSISTENT USERS
+// ==========================================
 
 function loadUsers() {
+
     try {
+
         if (!fs.existsSync(USERS_FILE)) {
+
             fs.writeFileSync(
                 USERS_FILE,
                 JSON.stringify([], null, 2)
@@ -44,18 +62,20 @@ function loadUsers() {
             return new Set();
         }
 
-        const data = fs.readFileSync(
-            USERS_FILE,
-            "utf8"
-        );
+        const data =
+            fs.readFileSync(
+                USERS_FILE,
+                "utf8"
+            );
 
-        const users = JSON.parse(data);
+        const savedUsers =
+            JSON.parse(data);
 
-        if (!Array.isArray(users)) {
+        if (!Array.isArray(savedUsers)) {
             return new Set();
         }
 
-        return new Set(users);
+        return new Set(savedUsers);
 
     } catch (error) {
 
@@ -69,6 +89,7 @@ function loadUsers() {
 }
 
 function saveUsers(users) {
+
     try {
 
         fs.writeFileSync(
@@ -95,28 +116,79 @@ console.log(
     `Loaded ${users.size} saved user(s).`
 );
 
-// =========================
+// ==========================================
 // MESSAGE STORAGE
-// =========================
+// ==========================================
 
 const messageStore = new Map();
 
-let reconnecting = false;
+// Prevent multiple reconnect loops
+let reconnectTimer = null;
 
-// =========================
+// ==========================================
 // START BOT
-// =========================
+// ==========================================
 
 async function startBot() {
 
     try {
 
-        const { state, saveCreds } =
-            await useMultiFileAuthState(
-                "auth_info"
+        console.log("");
+        console.log(
+            "Starting WhatsApp connection..."
+        );
+
+        // ======================================
+        // FETCH CURRENT WHATSAPP WEB VERSION
+        // ======================================
+
+        let version;
+
+        try {
+
+            const result =
+                await fetchLatestBaileysVersion();
+
+            version = result.version;
+
+            console.log(
+                "WhatsApp Web version:",
+                version.join(".")
             );
 
-        const sock = makeWASocket({
+            console.log(
+                "Version reported latest:",
+                result.isLatest
+            );
+
+        } catch (error) {
+
+            console.log(
+                "Could not fetch latest WA version."
+            );
+
+            console.log(
+                "Using Baileys default version."
+            );
+        }
+
+        // ======================================
+        // AUTHENTICATION
+        // ======================================
+
+        const {
+            state,
+            saveCreds
+        } =
+            await useMultiFileAuthState(
+                AUTH_DIR
+            );
+
+        // ======================================
+        // SOCKET OPTIONS
+        // ======================================
+
+        const socketOptions = {
 
             auth: state,
 
@@ -124,21 +196,45 @@ async function startBot() {
                 level: "silent"
             }),
 
-            printQRInTerminal: false
-        });
+            // IMPORTANT:
+            // Advertise as a web browser.
+            // This avoids the current Windows/DARWIN
+            // WebSubPlatform 428 issue.
+
+            browser:
+                Browsers.ubuntu("Chrome"),
+
+            printQRInTerminal: false,
+
+            markOnlineOnConnect: false,
+
+            syncFullHistory: false
+        };
+
+        // Only add version if successfully fetched
+        if (version) {
+            socketOptions.version = version;
+        }
+
+        const sock =
+            makeWASocket(socketOptions);
+
+        // ======================================
+        // SAVE CREDENTIALS
+        // ======================================
 
         sock.ev.on(
             "creds.update",
             saveCreds
         );
 
-        // =========================
-        // CONNECTION
-        // =========================
+        // ======================================
+        // CONNECTION UPDATE
+        // ======================================
 
         sock.ev.on(
             "connection.update",
-            (update) => {
+            async (update) => {
 
                 const {
                     connection,
@@ -151,19 +247,23 @@ async function startBot() {
                     connection || "waiting..."
                 );
 
+                // ==================================
                 // QR CODE
+                // ==================================
+
                 if (qr) {
 
                     console.log("");
                     console.log(
-                        "=============================="
+                        "================================"
                     );
                     console.log(
                         "       WHATSAPP QR CODE"
                     );
                     console.log(
-                        "=============================="
+                        "================================"
                     );
+                    console.log("");
 
                     qrcode.generate(
                         qr,
@@ -172,40 +272,62 @@ async function startBot() {
                         }
                     );
 
+                    console.log("");
                     console.log(
-                        "=============================="
+                        "================================"
                     );
                     console.log(
                         "Scan this QR with WhatsApp."
                     );
                     console.log(
-                        "=============================="
+                        "WhatsApp > Linked devices >"
+                    );
+                    console.log(
+                        "Link a device"
+                    );
+                    console.log(
+                        "================================"
                     );
                     console.log("");
                 }
 
+                // ==================================
                 // CONNECTED
-                if (connection === "open") {
+                // ==================================
 
-                    reconnecting = false;
+                if (connection === "open") {
 
                     console.log("");
                     console.log(
-                        "WhatsApp Bot Connected ✅"
+                        "================================"
                     );
+                    console.log(
+                        " WhatsApp Bot Connected ✅"
+                    );
+                    console.log(
+                        "================================"
+                    );
+
                     console.log(
                         `Saved users: ${users.size}`
                     );
+
                     console.log("");
                 }
 
-                // CLOSED
+                // ==================================
+                // CONNECTION CLOSED
+                // ==================================
+
                 if (connection === "close") {
 
                     const statusCode =
-                        lastDisconnect?.error
-                            ?.output?.statusCode;
+                        lastDisconnect
+                            ?.error
+                            ?.output
+                            ?.statusCode;
 
+                    console.log("");
                     console.log(
                         "WhatsApp connection closed."
                     );
@@ -215,48 +337,70 @@ async function startBot() {
                         statusCode
                     );
 
+                    // ==================================
+                    // LOGGED OUT
+                    // ==================================
+
                     if (
                         statusCode ===
                         DisconnectReason.loggedOut
                     ) {
 
+                        console.log("");
                         console.log(
-                            "WhatsApp session logged out."
+                            "WhatsApp session is logged out."
                         );
 
                         console.log(
-                            "Delete auth_info and restart the bot."
+                            `Auth folder: ${AUTH_DIR}`
+                        );
+
+                        console.log(
+                            "Delete auth_info only if you"
+                        );
+
+                        console.log(
+                            "want to create a completely"
+                        );
+
+                        console.log(
+                            "new WhatsApp session."
                         );
 
                         return;
                     }
 
-                    if (!reconnecting) {
+                    // ==================================
+                    // DON'T CREATE MULTIPLE TIMERS
+                    // ==================================
 
-                        reconnecting = true;
+                    if (reconnectTimer) {
+                        return;
+                    }
 
-                        console.log(
-                            "Reconnecting in 3 seconds..."
-                        );
+                    console.log(
+                        "Reconnecting in 5 seconds..."
+                    );
 
+                    reconnectTimer =
                         setTimeout(
                             () => {
 
-                                reconnecting = false;
+                                reconnectTimer =
+                                    null;
 
                                 startBot();
 
                             },
-                            3000
+                            5000
                         );
-                    }
                 }
             }
         );
 
-        // =========================
+        // ======================================
         // MESSAGE HANDLER
-        // =========================
+        // ======================================
 
         sock.ev.on(
             "messages.upsert",
@@ -264,7 +408,8 @@ async function startBot() {
 
                 try {
 
-                    const msg = messages[0];
+                    const msg =
+                        messages[0];
 
                     if (
                         !msg ||
@@ -276,6 +421,10 @@ async function startBot() {
                     const jid =
                         msg.key.remoteJid;
 
+                    // ==================================
+                    // GET MESSAGE TEXT
+                    // ==================================
+
                     const text =
                         msg.message.conversation ||
                         msg.message
@@ -283,7 +432,10 @@ async function startBot() {
                             ?.text ||
                         "";
 
-                    // Save message
+                    // ==================================
+                    // SAVE MESSAGE
+                    // ==================================
+
                     messageStore.set(
                         msg.key.id,
                         {
@@ -292,7 +444,7 @@ async function startBot() {
                         }
                     );
 
-                    // Ignore bot's own messages
+                    // Ignore own messages
                     if (msg.key.fromMe) {
                         return;
                     }
@@ -303,9 +455,9 @@ async function startBot() {
                             .split(/\s+/)[0]
                             .toLowerCase();
 
-                    // =========================
+                    // ==================================
                     // !HELP
-                    // =========================
+                    // ==================================
 
                     if (command === "!help") {
 
@@ -330,9 +482,9 @@ async function startBot() {
                         return;
                     }
 
-                    // =========================
+                    // ==================================
                     // !STATUS
-                    // =========================
+                    // ==================================
 
                     if (command === "!status") {
 
@@ -347,9 +499,9 @@ async function startBot() {
                         return;
                     }
 
-                    // =========================
+                    // ==================================
                     // !ID
-                    // =========================
+                    // ==================================
 
                     if (command === "!id") {
 
@@ -366,9 +518,9 @@ ${jid}`
                         return;
                     }
 
-                    // =========================
+                    // ==================================
                     // !SEND
-                    // =========================
+                    // ==================================
 
                     if (command === "!send") {
 
@@ -403,9 +555,9 @@ ${jid}`
                         return;
                     }
 
-                    // =========================
+                    // ==================================
                     // !ADD
-                    // =========================
+                    // ==================================
 
                     if (command === "!add") {
 
@@ -445,7 +597,6 @@ ${jid}`
 
                         users.add(number);
 
-                        // SAVE TO FILE
                         saveUsers(users);
 
                         await sock.sendMessage(
@@ -459,9 +610,9 @@ ${jid}`
                         return;
                     }
 
-                    // =========================
+                    // ==================================
                     // !REMOVE
-                    // =========================
+                    // ==================================
 
                     if (command === "!remove") {
 
@@ -501,7 +652,6 @@ ${jid}`
 
                         users.delete(number);
 
-                        // SAVE UPDATED LIST
                         saveUsers(users);
 
                         await sock.sendMessage(
@@ -515,9 +665,9 @@ ${jid}`
                         return;
                     }
 
-                    // =========================
+                    // ==================================
                     // !LIST
-                    // =========================
+                    // ==================================
 
                     if (command === "!list") {
 
@@ -557,9 +707,9 @@ Total: ${users.size}`
                         return;
                     }
 
-                    // =========================
+                    // ==================================
                     // !PROMOTE
-                    // =========================
+                    // ==================================
 
                     if (command === "!promote") {
 
@@ -595,9 +745,9 @@ Total: ${users.size}`
                         return;
                     }
 
-                    // =========================
+                    // ==================================
                     // !DEMOTE
-                    // =========================
+                    // ==================================
 
                     if (command === "!demote") {
 
@@ -643,15 +793,17 @@ Total: ${users.size}`
             }
         );
 
-        // =========================
-        // DELETED MESSAGE
-        // =========================
+        // ======================================
+        // DELETED MESSAGE HANDLER
+        // ======================================
 
         sock.ev.on(
             "messages.update",
             async (updates) => {
 
-                for (const update of updates) {
+                for (
+                    const update of updates
+                ) {
 
                     try {
 
@@ -695,9 +847,15 @@ ${old.text}`
 
     } catch (error) {
 
+        console.error("");
         console.error(
-            "Bot startup error:",
-            error
+            "BOT STARTUP ERROR:"
+        );
+        console.error(error);
+        console.error("");
+
+        console.log(
+            "Retrying in 5 seconds..."
         );
 
         setTimeout(
@@ -707,12 +865,20 @@ ${old.text}`
     }
 }
 
-// =========================
+// ==========================================
 // START
-// =========================
+// ==========================================
 
+console.log("");
 console.log(
-    "Starting WhatsApp Bot..."
+    "================================"
 );
+console.log(
+    "       Starting WhatsApp Bot"
+);
+console.log(
+    "================================"
+);
+console.log("");
 
 startBot();
